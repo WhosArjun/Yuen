@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.agent/
+*.sqlite3
+workspace/*
+!workspace/.gitkeep
+config.json
+.pytest_cache/

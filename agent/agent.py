@@ -20,6 +20,7 @@ The real agent loop:
 """
 
 import json
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -92,12 +93,66 @@ class Agent:
         messages.extend(self.memory.get_recent_messages(limit=30))
         return messages
 
+    def _requires_live_information(self, text: str) -> bool:
+        lower = text.lower()
+        if not lower.strip():
+            return False
+
+        live_markers = [
+            "current", "currently", "latest", "newest", "news",
+            "today", "tomorrow", "this week", "this month", "this year",
+            "next year", "next year's", "upcoming", "next", "now",
+            "schedule", "scores", "results", "winner", "prices",
+            "who currently", "who is currently", "what is the current",
+        ]
+        if any(marker in lower for marker in live_markers):
+            return True
+
+        # Specific dynamic facts that should never be guessed from model memory.
+        if re.search(r"\b(?:frc|first robotics|robotics competition)\b", lower):
+            return True
+
+        # Strong “time-sensitive fact” patterns: “next/this/latest/now + entity”
+        if re.search(
+            r"\b(?:next|latest|current|upcoming|this|today|tomorrow)\b.*\b(?:game|release|event|schedule|winner|price|result|version|roster|president|leader|team)\b",
+            lower,
+        ):
+            return True
+
+        return False
+
+    def _prepare_live_information(self, user_input: str) -> Optional[Dict[str, Any]]:
+        if not self._requires_live_information(user_input):
+            return None
+
+        base_query = user_input.strip()
+        if len(base_query) > 180:
+            base_query = base_query[:180].strip()
+
+        self.status_callback("Checking current information before answering.")
+        result = self.tool_manager.dispatch("web_search", {"query": base_query, "max_results": 5})
+
+        self.memory.add_message("assistant", "I’m checking current information before answering.")
+        self.memory.add_message("tool", f"[web_search result] {json.dumps(result, ensure_ascii=False)[:8000]}")
+
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error", "Web search failed."), "query": base_query}
+        return result
+
     def run_turn(self, user_input: str) -> str:
         """
         Runs one full user turn: may involve many tool calls internally,
         but returns a single final text response.
         """
         self.memory.add_message("user", user_input)
+        live_check = self._prepare_live_information(user_input)
+        if live_check is not None and not live_check.get("success"):
+            final = (
+                "I can’t answer that accurately because I could not verify it using current web information. "
+                "For time-sensitive facts like upcoming FRC games, I need a successful web lookup before answering."
+            )
+            self.memory.add_message("assistant", final)
+            return final
 
         for step in range(1, self.config.max_steps + 1):
             messages = self._build_messages()

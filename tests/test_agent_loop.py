@@ -132,3 +132,36 @@ def test_dangerous_delete_declined(workspace):
 
     import os
     assert os.path.exists(f"{workspace}/keep.txt")
+
+
+def test_time_sensitive_question_triggers_web_search_guard(workspace):
+    responses = [
+        LLMResponse(content="I checked the current information and the game is ...", tool_calls=[]),
+    ]
+    agent = make_agent(workspace, responses)
+
+    with patch.object(agent.tool_manager, "dispatch", return_value={
+        "success": True,
+        "query": "2026 FIRST Robotics Competition game",
+        "results": [{"title": "FRC 2026 game", "url": "https://example.com", "snippet": "The 2026 game is ..."}],
+    }) as fake_dispatch:
+        final = agent.run_turn("What is next year's FRC game?")
+
+    assert "FRC" in final or "current" in final.lower() or "game" in final.lower()
+    assert any(call.args[0] == "web_search" for call in fake_dispatch.call_args_list)
+
+
+def test_time_sensitive_question_refuses_if_web_check_fails(workspace):
+    responses = [
+        LLMResponse(content="I know the answer from memory: it's game X.", tool_calls=[]),
+    ]
+    agent = make_agent(workspace, responses)
+
+    with patch.object(agent.tool_manager, "dispatch", return_value={
+        "success": False,
+        "error": "No results returned (search backend may be unreachable, or blocked network access).",
+        "query": "What is next year's FRC game?",
+    }):
+        final = agent.run_turn("What is next year's FRC game?")
+
+    assert "cannot answer" in final.lower() or "verify" in final.lower() or "current information" in final.lower()
